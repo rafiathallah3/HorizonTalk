@@ -1,0 +1,295 @@
+{{template "base" .}}
+
+{{define "judul"}}
+    {{ .judul }}
+{{end}}
+
+{{define "utama"}}
+<style>
+    html, body {
+        height: 100%;
+    }
+</style>
+<div class="container-fluid h-100">
+    <div class="row row-cols-2 h-100">
+        <video class="col-6" id="video_kita" style="background-color: grey;"></video>
+        <video class="col-6" id="video_remote" style="background-color: black;"></video>
+        <div class="col-6">
+            <div class="d-flex flex-row">
+                <h5 class="me-4" >Horizon Talk</h5>
+                <h5 class="me-4" id="berapa-online">Online: 100</h5>
+                <h5 class="me-4" id="status">Status: <span style="color: orange;">Idle</spa></h5>
+            </div>
+            <div class="row">
+                <button class="col" onclick="Cari();">FIND</button>
+                <button class="col" onclick="Stop();">STOP</button>
+            </div>
+        </div>
+        <div class="col-6">
+            <div class="overflow-auto" style="height: 90%;">
+                <ul class="list-group list-group-flush" id="tempat_chat">
+                </ul>
+            </div>
+            <div class="d-flex flex-row">
+                <input class="w-100" type="text" placeholder="Text" id="text" autocomplete="off">
+                <button class="btn btn-success" onclick="KirimPesan()">Send</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+/** @type {WebSocket} */
+let socket;
+let DalamKamar = false;
+let SedangMencari = false;
+let SocketMati = false;
+let Akun = "";
+
+const servers = {
+    iceServers: [
+        {
+            urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'],
+        },
+    ],
+    iceCandidatePoolSize: 10,
+};
+
+let pc = new RTCPeerConnection(servers);
+
+let video_kita = document.getElementById("video_kita");
+let video_remote = document.getElementById("video_remote");
+
+/** @type {MediaStream} */
+let localStream = null;
+/** @type {MediaStream} */
+let remoteStream = null;
+
+onload = function() {
+    if(window.WebSocket === undefined) {
+        alert("Your browser doesn't support WebSocket!");
+        return;
+    }
+
+    socket = new WebSocket(`ws://${document.location.host}/ws`);
+
+    socket.onopen = () => {
+        console.log("Successfully Connected");
+    };
+    
+    socket.onmessage = msg => {
+        const Data = JSON.parse(msg.data);
+        console.log(Data);
+
+        if(Data.tipe === 1) {
+            $("#berapa-online").text(`Online: ${Data.online}`);
+        }
+
+        if(Data.tipe === 2) {
+            console.log(Data.isi, "Tipe 2");
+            const Isi = JSON.parse(Data.isi);
+            Akun = Isi.id;
+            DalamKamar = Isi.id !== "";
+
+            if(DalamKamar) {
+                GantiStatus("Talking", "blue");
+                SedangMencari = false;
+            } else {
+                GantiStatus("Idle", "orange");
+
+                pc = null;
+                localStream = null;
+                remoteStream = null;
+                video_kita.srcObject = new MediaStream();
+                video_remote.srcObject = new MediaStream();
+            }
+
+            if(Isi.id == 1 && DalamKamar) {
+                console.log("Kirim Offer!");
+                BuatOffer();
+            }
+
+            $("#tempat_chat").empty();
+            $("#tempat_chat").append(`
+            <li class="list-group-item d-flex justify-content-between align-items-start">
+                <div class="ms-2 me-auto">
+                    <div class="fw-bold">SERVER</div>
+                    ${Isi.info}
+                </div>
+                <span class="badge bg-primary rounded-pill">${new Date().toLocaleTimeString()}</span>
+            </li>
+            `);
+        }
+
+        if(Data.tipe === 3 && DalamKamar) {
+            const Isi = JSON.parse(Data.isi);
+
+            $("#tempat_chat").append(`
+            <li class="list-group-item d-flex justify-content-between align-items-start">
+                <div class="ms-2 me-auto">
+                    <div class="fw-bold">${(Isi.id === Akun ? "You" : "Anonymous")}</div>
+                    ${Isi.info}
+                </div>
+                <span class="badge bg-primary rounded-pill">${new Date().toLocaleTimeString()}</span>
+            </li>
+            `);
+        }
+
+        if(Data.tipe === 4) {
+            console.log("Dapat Offer!");
+            BuatAnswer(JSON.parse(Data.isi));
+        }
+
+        if(Data.tipe === 5) {
+            console.log("Dapat Jawaban!");
+            TambahAnswer(JSON.parse(Data.isi));
+        }
+
+        if(Data.tipe === 6) {
+            console.log(JSON.parse(Data.isi), "tipe 6")
+            pc.addIceCandidate(JSON.parse(Data.isi));
+        } 
+    };
+
+    socket.onclose = event => {
+        SocketMati = true;
+        console.log("Socket Closed Connection: ", event);
+    };
+
+    socket.onerror = error => {
+        SocketMati = true;
+        console.log("Socket Error: ", error);
+    };
+}
+
+function GantiStatus(status, warna) {
+    $("#status").html(`Status: <span style="color: ${warna}">${status}</span>`)
+}
+
+async function Cari() {
+    if(DalamKamar || SedangMencari || SocketMati) {
+        return;
+    }
+
+    SedangMencari = true;
+    
+    GantiStatus("Finding...", "green");
+
+    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    remoteStream = new MediaStream();
+    
+    pc = new RTCPeerConnection(servers); 
+
+    localStream.getTracks().forEach(track => {
+        pc.addTrack(track, localStream);
+    });
+
+    pc.ontrack = e => {
+        e.streams[0].getTracks().forEach(track => {
+            remoteStream.addTrack(track);
+            console.log("Tambahin Track ke remote!");
+        });
+    }
+
+    video_kita.srcObject = localStream;
+    video_remote.srcObject = remoteStream;
+
+    socket.send(JSON.stringify({ tipe: 1, isi: "Cari" }));
+    $("#tempat_chat").empty();
+}
+
+function Stop() {
+    if(SocketMati) {
+        return;
+    }
+    
+    if(DalamKamar) {
+        GantiStatus("Idle", "orange");
+    
+        pc = null;
+        localStream = null;
+        remoteStream = null;
+        video_kita.srcObject = new MediaStream();
+        video_remote.srcObject = new MediaStream();
+        socket.send(JSON.stringify({ tipe: 1, isi: "Stop" }));
+        
+        $("#tempat_chat").empty();
+    }
+}
+
+function KirimPesan() {
+    if(SocketMati) {
+        return
+    }
+
+    if(DalamKamar) {
+        console.log("KIRIM PESAN!");
+        socket.send(JSON.stringify({ tipe: 2, isi: $('#text').val() }));
+    }
+
+    $('#text').val("");
+}
+
+async function BuatOffer() {
+    if(SocketMati) {
+        return;
+    }
+
+    pc.onicecandidate = e => {
+        e.candidate && socket.send(JSON.stringify({ tipe: 5, isi: JSON.stringify(e.candidate.toJSON()) }));
+    }
+
+    const offerDescription = await pc.createOffer();
+    await pc.setLocalDescription(offerDescription);
+
+    const offer = {
+        sdp: offerDescription.sdp,
+        type: offerDescription.type,
+    };
+
+    // console.log(offer);
+    socket.send(JSON.stringify({ tipe: 3, isi: JSON.stringify(offer) }));
+}
+
+async function BuatAnswer(data) {
+    if(SocketMati) {
+        return;
+    }
+
+    pc.onicecandidate = e => {
+        e.candidate && socket.send(JSON.stringify({ tipe: 5, isi: JSON.stringify(e.candidate.toJSON()) }));
+    }
+
+    await pc.setRemoteDescription(new RTCSessionDescription(data));
+
+    const answerDescription = await pc.createAnswer();
+    await pc.setLocalDescription(answerDescription);
+
+    const answer = {
+        type: answerDescription.type,
+        sdp: answerDescription.sdp,
+    };
+
+    console.log("Kirim Jawaban");
+    socket.send(JSON.stringify({ tipe: 4, isi: JSON.stringify(answer) }))
+}
+
+async function TambahAnswer(data) {
+    if(SocketMati) {
+        return;
+    }
+    
+    if(!pc.currentRemoteDescription) {
+        pc.setRemoteDescription(new RTCSessionDescription(data));
+    }
+}
+
+video_kita.addEventListener("loadedmetadata", () => {
+    video_kita.play();
+});
+
+video_remote.addEventListener("loadedmetadata", () => {
+    video_remote.play();
+});
+</script>
+{{end}}
